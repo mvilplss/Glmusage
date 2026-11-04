@@ -1019,11 +1019,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     // setImage 也会再次触发 KVO 通知，用明暗主题快照去重防止 renderBar↔KVO 反馈循环
     private var statusItemAppearanceObs: NSKeyValueObservation?
     private var barThemeDark: Bool?
-    // NSStatusBarButton.effectiveAppearance 在深→浅方向有数十秒粘滞（退出全屏后按钮仍报深色，
-    // 正是"白字要点击才恢复"的根因）：每 5s 对账按钮主题 vs 系统主题，不一致时 isVisible 轻推
-    // 强制重解析；轻推限流 30s 防止闪烁。KVO 负责即时响应，对账负责兜底粘滞。
-    private var appearancePollTimer: Timer?
-    private var lastBarNudge: Date?
     private let popover = NSPopover()
     private let panelController = NSViewController()
     private let panelRoot = GLMPanelStack()
@@ -1119,12 +1114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         rebuildMenu()
         renderBar()
         // 状态栏底色变化（全屏进出/深浅模式切换）时立即按新外观重画两行余量，不再等下一次数据刷新；
-        // 仅在明暗主题实际变化时执行（setImage 会再次触发 KVO，不去重会形成重画循环）
+        // 仅在明暗主题实际变化时执行（setImage 会再次触发 KVO，不去重会形成重画循环）。
+        // 动态颜色方案下图标配色由系统在每条菜单栏绘制时各自解析，KVO 只是加快更新，不再需要轮询对账。
         attachBarAppearanceObserver()
-        appearancePollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.reconcileBarAppearance()
-        }
-        appearancePollTimer?.tolerance = 1
         refresh(tokens: true)
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -1359,22 +1351,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         statusItemAppearanceObs = statusItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in
             DispatchQueue.main.async { self?.renderBarIfThemeChanged() }
         }
-    }
-
-    /// 按钮/系统主题对账：粘滞（按钮仍报旧主题）时轻推状态栏项强制重解析，再按需重画
-    private func reconcileBarAppearance() {
-        guard let button = statusItem?.button else { return }
-        let appDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let buttonDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        if buttonDark != appDark,
-           lastBarNudge.map({ Date().timeIntervalSince($0) >= 30 }) ?? true {
-            lastBarNudge = Date()
-            statusItem.isVisible = false
-            statusItem.isVisible = true
-            // isVisible 切换可能重建按钮实例，重新挂 KVO
-            attachBarAppearanceObserver()
-        }
-        renderBarIfThemeChanged()
     }
 
     /// 仅当按钮解析出的明暗主题与上次渲染快照不同时才重画（防止 setImage↔KVO 循环）
